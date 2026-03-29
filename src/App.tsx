@@ -22,9 +22,10 @@ interface FileWithPreview extends File {
   id: string;
   status: 'idle' | 'converting' | 'completed' | 'error';
   progress: number;
+  isHeic?: boolean;
 }
 
-const SUPPORTED_FORMATS = ['JPG', 'PNG', 'WEBP', 'GIF', 'BMP', 'TIFF'];
+const SUPPORTED_FORMATS = ['JPG', 'PNG', 'WEBP', 'GIF', 'BMP', 'TIFF', 'HEIC', 'HEIF'];
 const OUTPUT_FORMATS = ['jpeg', 'png', 'webp', 'avif', 'gif'];
 
 export default function App() {
@@ -42,23 +43,69 @@ export default function App() {
     handleFiles(droppedFiles);
   }, []);
 
-  const handleFiles = (newFiles: File[]) => {
+  const handleFiles = async (newFiles: File[]) => {
     if (files.length + newFiles.length > 20) {
       alert('Maximum 20 files allowed');
       return;
     }
 
-    const validFiles = newFiles.filter(file => {
+    const preprocessedFiles = newFiles.map(file => {
+      const ext = file.name.split('.').pop()?.toUpperCase() || '';
+      const isHeic = ext === 'HEIC' || ext === 'HEIF' || file.type.includes('heic') || file.type.includes('heif');
+      
+      if (isHeic) {
+        return Object.assign(file, {
+          preview: '',
+          id: Math.random().toString(36).substring(7),
+          status: 'converting' as const,
+          progress: 50,
+          isHeic: true
+        });
+      }
+      return Object.assign(file, {
+        preview: URL.createObjectURL(file),
+        id: Math.random().toString(36).substring(7),
+        status: 'idle' as const,
+        progress: 0,
+        isHeic: false
+      });
+    });
+
+    const validFiles = preprocessedFiles.filter(file => {
+      if (file.isHeic) return true;
       const type = file.type.split('/')[1]?.toUpperCase();
       return SUPPORTED_FORMATS.includes(type) || file.type === 'image/jpeg';
-    }).map(file => Object.assign(file, {
-      preview: URL.createObjectURL(file),
-      id: Math.random().toString(36).substring(7),
-      status: 'idle' as const,
-      progress: 0
-    }));
+    });
 
     setFiles(prev => [...prev, ...validFiles]);
+
+    for (const file of validFiles) {
+      if (file.isHeic) {
+        try {
+          const heic2any = (await import('heic2any')).default;
+          const convertedBlob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.8 });
+          const blobToUse = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob;
+          
+          const newFileName = file.name.replace(/\.(heic|heif)$/i, '.jpg');
+          const newFile = new File([blobToUse], newFileName, { type: 'image/jpeg' });
+          
+          setFiles(prev => prev.map(f => {
+            if (f.id === file.id) {
+              return Object.assign(newFile, {
+                preview: URL.createObjectURL(newFile),
+                id: file.id,
+                status: 'idle' as const,
+                progress: 0
+              });
+            }
+            return f;
+          }));
+        } catch (error) {
+          console.error("Failed to convert HEIC:", error);
+          setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'error', progress: 0 } : f));
+        }
+      }
+    }
   };
 
   const removeFile = (id: string) => {
